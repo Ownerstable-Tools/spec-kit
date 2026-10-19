@@ -163,6 +163,10 @@ class PresetManager(_PresetCommandMethods, _PresetSkillMethods):
         self.presets_dir = project_root / ".specify" / "presets"
         self.registry = PresetRegistry(self.presets_dir)
 
+    def _command_registrar(self):
+        from ..agents import CommandRegistrar
+        return CommandRegistrar(self.project_root, include_generic=False)
+
     def check_compatibility(
         self,
         manifest: PresetManifest,
@@ -389,19 +393,24 @@ class PresetManager(_PresetCommandMethods, _PresetSkillMethods):
 
         self.check_compatibility(manifest, speckit_version)
 
-        if self.registry.is_installed(manifest.id):
-            if not force:
-                raise PresetError(
-                    f"Preset '{manifest.id}' is already installed. "
-                    f"Use 'specify preset remove {manifest.id}' first."
-                )
-            self.remove(manifest.id)
+        from ..integrations._file_changes import after_file_change, before_file_change, changing_file
 
         dest_dir = self.presets_dir / manifest.id
-        if dest_dir.exists():
-            shutil.rmtree(dest_dir)
-
-        shutil.copytree(source_dir, dest_dir)
+        installed = self.registry.is_installed(manifest.id)
+        if installed and not force:
+            raise PresetError(
+                f"Preset '{manifest.id}' is already installed. "
+                f"Use 'specify preset remove {manifest.id}' first."
+            )
+        before_file_change(dest_dir, removal=True)
+        try:
+            if installed:
+                self.remove(manifest.id)
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(source_dir, dest_dir)
+        finally:
+            after_file_change(dest_dir)
 
         # Pre-register the preset so that composition resolution can see it
         # in the priority stack when resolving composed command content.
@@ -456,7 +465,8 @@ class PresetManager(_PresetCommandMethods, _PresetSkillMethods):
                 )
             try:
                 if dest_dir.exists():
-                    shutil.rmtree(dest_dir)
+                    with changing_file(dest_dir, removal=True):
+                        shutil.rmtree(dest_dir)
             except OSError:
                 pass  # best-effort cleanup; don't mask the original error
             self.registry.remove(manifest.id)
@@ -559,6 +569,8 @@ class PresetManager(_PresetCommandMethods, _PresetSkillMethods):
         force: bool = False,
         *,
         catalog_name: str | None = None,
+        expected_id: str | None = None,
+        expected_version: str | None = None,
     ) -> PresetManifest:
         """Install a preset from a supported archive.
 
@@ -602,6 +614,27 @@ class PresetManager(_PresetCommandMethods, _PresetSkillMethods):
                     "No preset.yml found in archive"
                 )
 
+            if expected_id is not None or expected_version is not None:
+                manifest = PresetManifest(manifest_path)
+                if expected_id is not None and manifest.id != expected_id:
+                    raise PresetValidationError(
+                        f"Preset archive ID '{manifest.id}' does not match catalog ID '{expected_id}'."
+                    )
+                if expected_version is not None:
+                    try:
+                        matches_version = (
+                            pkg_version.Version(manifest.version)
+                            == pkg_version.Version(expected_version)
+                        )
+                    except (pkg_version.InvalidVersion, TypeError):
+                        raise PresetValidationError(
+                            f"Invalid expected catalog version: {expected_version!r}"
+                        ) from None
+                    if not matches_version:
+                        raise PresetValidationError(
+                            f"Preset archive version '{manifest.version}' does not match catalog version '{expected_version}'."
+                        )
+
             return self.install_from_directory(
                 pack_dir,
                 speckit_version,
@@ -618,6 +651,8 @@ class PresetManager(_PresetCommandMethods, _PresetSkillMethods):
         force: bool = False,
         *,
         catalog_name: str | None = None,
+        expected_id: str | None = None,
+        expected_version: str | None = None,
     ) -> PresetManifest:
         """Backward-compatible wrapper for archive installation."""
         return self.install_from_archive(
@@ -626,6 +661,8 @@ class PresetManager(_PresetCommandMethods, _PresetSkillMethods):
             priority,
             force=force,
             catalog_name=catalog_name,
+            expected_id=expected_id,
+            expected_version=expected_version,
         )
 
     def remove(self, pack_id: str) -> bool:
@@ -681,7 +718,7 @@ class PresetManager(_PresetCommandMethods, _PresetSkillMethods):
         # winner for the current agent, leaving the inactive integration
         # with a missing/stale file (#2948).
         try:
-            from ..agents import CommandRegistrar as _CommandRegistrarForScope
+            _CommandRegistrarForScope = self._command_registrar()
         except ImportError:
             _CommandRegistrarForScope = None
         affected_command_agents = {
@@ -808,7 +845,7 @@ class PresetManager(_PresetCommandMethods, _PresetSkillMethods):
                 restore_from_bundled_core=True,
             )
             try:
-                from ..agents import CommandRegistrar
+                CommandRegistrar = self._command_registrar()
             except ImportError:
                 CommandRegistrar = None
             if CommandRegistrar is not None:
