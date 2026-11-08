@@ -335,6 +335,54 @@ def test_github_actions_are_pinned_to_full_commit_shas():
     assert unpinned_refs == []
 
 
+@pytest.mark.parametrize("event_name", ["push", "pull_request", "workflow_dispatch"])
+def test_pytest_matrix_covers_supported_python_versions_on_all_platforms(event_name):
+    workflow = yaml.safe_load(
+        (WORKFLOWS_DIR / "test.yml").read_text(encoding="utf-8")
+    )
+    triggers = workflow.get("on", workflow.get(True))
+    assert set(triggers) == {"push", "pull_request", "workflow_dispatch"}
+    assert triggers["push"]["branches"] == ["main"]
+    job = workflow["jobs"]["pytest"]
+    matrix = job["strategy"]["matrix"]
+    assert matrix["os"] == ["ubuntu-latest", "windows-latest", "macos-latest"]
+    expression = re.fullmatch(
+        r"\$\{\{ fromJSON\(github\.event_name == 'workflow_dispatch' "
+        r"&& '([^']+)' \|\| '([^']+)'\) \}\}",
+        matrix["python-version"],
+    )
+    assert expression is not None
+    versions = json.loads(
+        expression.group(1 if event_name == "workflow_dispatch" else 2)
+    )
+    combinations = [(os_name, version) for os_name in matrix["os"] for version in versions]
+    assert matrix["include"] == [{"os": "ubuntu-latest", "python-version": "3.11"}]
+    for entry in matrix["include"]:
+        combination = (entry["os"], entry["python-version"])
+        if combination not in combinations:
+            combinations.append(combination)
+
+    expected_versions = (
+        ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        if event_name == "workflow_dispatch"
+        else ["3.13", "3.14", "3.15"]
+    )
+    expected = {
+        (os_name, version)
+        for os_name in ["ubuntu-latest", "windows-latest", "macos-latest"]
+        for version in expected_versions
+    }
+    expected.add(("ubuntu-latest", "3.11"))
+    assert set(combinations) == expected
+    assert len(combinations) == (15 if event_name == "workflow_dispatch" else 10)
+    assert job["runs-on"] == "${{ matrix.os }}"
+    setup_python = next(
+        step for step in job["steps"]
+        if step.get("uses", "").startswith("actions/setup-python@")
+    )
+    assert setup_python["with"]["python-version"] == "${{ matrix.python-version }}"
+
+
 def test_publish_tag_validation_uses_environment_variable():
     steps = _publish_workflow_steps()
 
@@ -1406,7 +1454,7 @@ def test_bug_test_workflow_provisions_python_dependencies():
     positions = [names.index(name) for name in expected_names]
     assert positions == sorted(positions)
     assert _workflow_step(steps, "Setup uv")["uses"] == (
-        "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d"
+        "astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2"
     )
     python_step = _workflow_step(steps, "Set up Python")
     assert python_step["uses"] == (

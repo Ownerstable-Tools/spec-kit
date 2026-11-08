@@ -53,7 +53,6 @@ _CORE_COMMAND_TEMPLATE_ORDER = (
     "checklist",
     "specify",
     "tasks",
-    "taskstoissues",
 )
 _CORE_COMMAND_TEMPLATE_RANK = {
     command: index for index, command in enumerate(_CORE_COMMAND_TEMPLATE_ORDER)
@@ -148,9 +147,8 @@ class IntegrationBase(ABC):
     multi_install_safe: bool = False
     """Whether this integration is declared safe to install alongside others.
 
-    Safe integrations must use a static, unique agent root and command
-    directory. Registry tests enforce those invariants for every
-    integration that sets this flag.
+    Safe integrations must emit no files or use a static, unique agent root
+    and command directory. Registry tests enforce these invariants.
     """
 
     legacy_flat_command_dir: str | None = None
@@ -171,6 +169,26 @@ class IntegrationBase(ABC):
         The default implementation returns *content* unchanged.
         """
         return content
+
+    def process_registered_command(
+        self, frontmatter: dict[str, Any], body: str, *, source_id: str
+    ) -> tuple[dict[str, Any], str]:
+        """Transform a command's frontmatter and body before it is rendered.
+
+        Called by ``CommandRegistrar.register_commands()`` for every command it
+        registers for this integration, after script paths are adjusted and the
+        ``name`` field is injected, and before ``$ARGUMENTS`` and
+        ``__SPECKIT_COMMAND_*__`` tokens are resolved and the command is
+        rendered.  Unlike ``post_process_command_content()``, which only sees
+        the rendered text, this hook receives the parsed frontmatter and the
+        *source_id* (``"core"`` or an extension/preset id), so an integration
+        can apply rewrites that depend on where a command came from.
+
+        Subclasses may override it; they should return new objects rather
+        than mutating *frontmatter* in place.  The default implementation
+        returns both values unchanged.
+        """
+        return frontmatter, body
 
     # -- Public API -------------------------------------------------------
 
@@ -999,6 +1017,20 @@ class IntegrationBase(ABC):
 
         return content
 
+    def preflight_setup(
+        self,
+        project_root: Path,
+        parsed_options: dict[str, Any] | None = None,
+        *,
+        script_type: str | None = None,
+    ) -> None:
+        """Reject a planned ``setup()`` before the CLI writes shared files.
+
+        Install, switch and upgrade call this before touching shared
+        infrastructure. Raise ``ValueError`` or ``OSError`` to refuse.
+        The default accepts every setup.
+        """
+
     def setup(
         self,
         project_root: Path,
@@ -1059,7 +1091,15 @@ class IntegrationBase(ABC):
 
         Returns ``(removed, skipped)`` file lists.
         """
-        self.remove_events(project_root, manifest)
+        import inspect
+
+        remove_events = self.remove_events
+        try:
+            inspect.signature(remove_events).bind(project_root, manifest, force=force)
+        except TypeError:
+            remove_events(project_root, manifest)
+        else:
+            remove_events(project_root, manifest, force=force)
         return manifest.uninstall(project_root, force=force)
 
     def emit_events(
@@ -1071,15 +1111,19 @@ class IntegrationBase(ABC):
         **opts: Any,
     ) -> list[Path]:
         """Emit native event configuration for this integration."""
-        return install_integration_events(self, project_root, manifest, events or {})
+        return install_integration_events(
+            self, project_root, manifest, events or {}, force=opts.get("force", False)
+        )
 
     def remove_events(
         self,
         project_root: Path,
         manifest: IntegrationManifest,
+        *,
+        force: bool = False,
     ) -> None:
         """Remove Specify-authored event entries from native config."""
-        remove_integration_events(self, project_root, manifest)
+        remove_integration_events(self, project_root, manifest, force=force)
 
     def supports_events(self) -> bool:
         """Return True if this integration supports agent-native events."""
@@ -1209,7 +1253,8 @@ class MarkdownIntegration(IntegrationBase):
 
         # Install agent runtime events
         event_files = self.emit_events(
-            project_root, manifest, events=opts.get("events"), parsed_options=parsed_options
+            project_root, manifest, events=opts.get("events"), parsed_options=parsed_options,
+            force=opts.get("force", False),
         )
         created.extend(event_files)
 
@@ -1426,7 +1471,8 @@ class TomlIntegration(IntegrationBase):
 
         # Install agent runtime events
         event_files = self.emit_events(
-            project_root, manifest, events=opts.get("events"), parsed_options=parsed_options
+            project_root, manifest, events=opts.get("events"), parsed_options=parsed_options,
+            force=opts.get("force", False),
         )
         created.extend(event_files)
 
@@ -1668,7 +1714,8 @@ class YamlIntegration(IntegrationBase):
 
         # Install agent runtime events
         event_files = self.emit_events(
-            project_root, manifest, events=opts.get("events"), parsed_options=parsed_options
+            project_root, manifest, events=opts.get("events"), parsed_options=parsed_options,
+            force=opts.get("force", False),
         )
         created.extend(event_files)
 
@@ -1954,7 +2001,8 @@ class SkillsIntegration(IntegrationBase):
 
         # Install agent runtime events
         event_files = self.emit_events(
-            project_root, manifest, events=opts.get("events"), parsed_options=parsed_options
+            project_root, manifest, events=opts.get("events"), parsed_options=parsed_options,
+            force=opts.get("force", False),
         )
         created.extend(event_files)
 
