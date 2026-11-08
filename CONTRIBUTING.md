@@ -11,7 +11,7 @@ These are one time installations required to be able to test your changes locall
 1. Install [Python 3.11+](https://www.python.org/downloads/)
 1. Install [uv](https://docs.astral.sh/uv/) for package management
 1. Install [Git](https://git-scm.com/downloads)
-1. Have an [AI coding agent available](https://github.github.io/spec-kit/reference/integrations.html)
+1. Have an [AI coding agent available](https://github.github.io/spec-kit/integrations/index.html)
 
 <details>
 <summary><b>💡 Hint if you are using <code>VSCode</code> or <code>GitHub Codespaces</code> as your IDE</b></summary>
@@ -36,15 +36,17 @@ On [GitHub Codespaces](https://github.com/features/codespaces) it's even simpler
 > If your pull request introduces a large change that materially impacts the work of the CLI or the rest of the repository (e.g., you're introducing new templates, arguments, or otherwise major changes), make sure that it was **discussed and agreed upon** by the project maintainers. Pull requests with large changes that did not have a prior conversation and agreement will be closed.
 
 1. Fork and clone the repository
-1. Configure and install the dependencies: `uv sync --extra test`
-1. Make sure the CLI works on your machine: `uv run specify --help`
+1. Set up this checkout's `.venv` and editable install using the [local development guide](https://github.github.io/spec-kit/how-to/local-development.html)
+1. Make sure the CLI works: `.venv/bin/specify --help` (Windows PowerShell: `.\.venv\Scripts\specify.exe --help`)
 1. Create a new branch (see [Branch naming](#branch-naming) below)
 1. Make your change, add tests, and make sure everything still works
 1. Test the CLI functionality with a sample project if relevant
 1. Push to your fork and submit a pull request
 1. Wait for your pull request to be reviewed and merged.
 
-Activate the project virtual environment (see [Testing setup](#testing-setup) below), then install the CLI from your working tree (`uv pip install -e .` after `uv sync --extra test`) or otherwise ensure the shell uses the local `specify` binary before running the manual slash-command tests described below.
+Use a separate `.venv` per checkout or worktree and run the CLI and tests through
+that environment's explicit executable paths. Follow [Testing setup](#testing-setup)
+before running the manual slash-command tests described below.
 
 Here are a few things you can do that will increase the likelihood of your pull request being accepted:
 
@@ -172,7 +174,7 @@ its pinned archive URL and preferably its SHA-256 in a catalog. Registering a
 catalog only enables discovery/download; importing executable adapter code
 requires the user's trust decision and an install-enabled source. Follow the
 [integration API and lifecycle design](design/integration.md#external-adapter-package-contract)
-and [integration catalog contribution guide](integrations/CONTRIBUTING.md).
+and [integration catalog contribution guide](docs/integrations/contributing.md).
 Add public-path positive and negative tests rather than injecting test classes
 directly into the registry; include fresh-process loading and rollback evidence.
 
@@ -259,28 +261,38 @@ For the smoothest review experience, validate changes in this order:
 #### Agent configuration and wiring consistency
 
 ```bash
-uv run python -m pytest tests/test_agent_config_consistency.py -q
+.venv/bin/python -m pytest tests/test_agent_config_consistency.py -q
 ```
 
 Run this when you change agent metadata, context update scripts, or integration wiring.
+On Windows PowerShell, use `.\.venv\Scripts\python.exe` instead of
+`.venv/bin/python`. Complete the [local environment setup](https://github.github.io/spec-kit/how-to/local-development.html#1-prepare-the-checkout)
+first.
 
 #### Running the full test suite
 
-Install the test dependencies into the project's own virtual environment and run
-`pytest` through that interpreter:
+Complete the [local environment setup](https://github.github.io/spec-kit/how-to/local-development.html#1-prepare-the-checkout),
+then run `pytest` through this checkout's interpreter:
 
 ```bash
-uv pip install -e ".[test]"
-.venv/bin/python -m pytest tests -q   # Windows: .venv\Scripts\python -m pytest tests -q
+.venv/bin/python -m pytest tests -q
 ```
 
-> **Note:** prefer `.venv/bin/python -m pytest` over a bare `uv run pytest`.
-> If another Spec Kit checkout has an editable (`-e`) install registered in a
-> shared/global environment, `uv run pytest` can resolve `specify_cli` to that
-> *other* worktree, turning it into a partial namespace package that fails to
-> import newly added subpackages. Running through the project `.venv` resolves
-> `specify_cli` to this checkout's `src/`. This matches the gotcha documented in
-> `AGENTS.md` (Common Pitfalls).
+On Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+On macOS, use `LC_ALL=en_US.UTF-8 .venv/bin/python -m pytest tests -q`
+so Bash Unicode handling uses a UTF-8 locale.
+
+Explicit environment paths prevent tests from importing another checkout's
+editable install. Start with the affected test files; run the full suite when
+the change requires broader regression coverage.
+
+See [Python version support](SUPPORT.md#python-version-support) for the routine
+and manual CI matrices, compatibility policy, and minimum-version lifecycle.
 
 #### Security checks
 
@@ -317,20 +329,19 @@ job until a follow-up cleanup tightens the threshold.
 
 #### Testing setup
 
+Follow the [local development guide](https://github.github.io/spec-kit/how-to/local-development.html#1-prepare-the-checkout)
+to create this checkout's `.venv` and install it in editable mode. From the
+Spec Kit repository root, initialize a separate test project with that CLI:
+
 ```bash
-# Install the project and test dependencies from your local branch
-cd <spec-kit-repo>
-uv sync --extra test
-source .venv/bin/activate  # On Windows (CMD): .venv\Scripts\activate  |  (PowerShell): .venv\Scripts\Activate.ps1
-uv pip install -e .
-# Ensure the `specify` binary in this environment points at your working tree so the agent runs the branch you're testing.
-
-# Initialize a test project using your local changes
-uv run specify init <temp-dir>/speckit-test --integration <agent>
+.venv/bin/specify init <temp-dir>/speckit-test --integration <agent>
 cd <temp-dir>/speckit-test
-
-# Open in your agent
 ```
+
+On Windows PowerShell, use `.\.venv\Scripts\specify.exe` instead of
+`.venv/bin/specify`. Open the generated project in your agent. If further CLI
+commands are needed from that directory, use the absolute path to the original
+checkout's `.venv` executable, not a globally installed `specify`.
 
 #### Manual testing process
 
